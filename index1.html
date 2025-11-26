@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>手势切水果 - 进阶版</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #1a1a1a; /* 深色背景 */
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      user-select: none;
+    }
+
+    /* 游戏主容器 */
+    #game-container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: radial-gradient(circle, #2c3e50 0%, #000000 100%);
+    }
+
+    .input_video {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 160px; /* 缩小显示 */
+      height: 120px;
+      opacity: 0.5;
+      z-index: 1;
+      transform: scaleX(-1);
+      border-bottom-right-radius: 10px;
+      border: 2px solid rgba(255,255,255,0.2);
+    }
+
+    .output_canvas {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      z-index: 2;
+      transform: scaleX(-1); /* 画布镜像，让操作符合直觉 */
+    }
+
+    /* 游戏内 HUD (分数/时间) - 不会被镜像 */
+    #hud-layer {
+      position: absolute;
+      top: 20px;
+      right: 30px;
+      z-index: 10;
+      color: white;
+      text-align: right;
+      pointer-events: none;
+      display: none; /* 初始隐藏 */
+    }
+
+    .hud-item {
+      margin-bottom: 15px;
+    }
+    .hud-label {
+      font-size: 14px;
+      color: #ccc;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .hud-value {
+      font-size: 42px;
+      font-weight: 800;
+      text-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+      font-family: 'Courier New', Courier, monospace;
+    }
+    #timer-val.warning { color: #ff4757; text-shadow: 0 0 15px #ff4757; }
+
+    /* 全屏菜单遮罩 (开始/结束) */
+    .menu-overlay {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      z-index: 20;
+      background: rgba(0, 0, 0, 0.85);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: white;
+      backdrop-filter: blur(5px);
+    }
+
+    .hidden { display: none !important; }
+
+    h1 { font-size: 60px; margin: 0 0 20px 0; text-shadow: 0 0 20px #e67e22; color: #f39c12; }
+    h2 { font-size: 40px; margin: 0 0 20px 0; color: #e74c3c; }
+    
+    .btn {
+      padding: 15px 40px;
+      font-size: 24px;
+      background: linear-gradient(45deg, #e67e22, #d35400);
+      color: white;
+      border: none;
+      border-radius: 50px;
+      cursor: pointer;
+      transition: transform 0.1s, box-shadow 0.1s;
+      box-shadow: 0 5px 15px rgba(230, 126, 34, 0.4);
+      font-weight: bold;
+    }
+    .btn:hover { transform: scale(1.05); box-shadow: 0 8px 20px rgba(230, 126, 34, 0.6); }
+    .btn:active { transform: scale(0.95); }
+
+    .score-board {
+      font-size: 24px;
+      margin-bottom: 30px;
+      text-align: center;
+      line-height: 1.5;
+    }
+    .highlight { color: #f1c40f; font-size: 32px; font-weight: bold; }
+
+  </style>
+</head>
+<body>
+
+<div id="game-container">
+  <video class="input_video"></video>
+  <canvas class="output_canvas"></canvas>
+  
+  <!-- 游戏内 HUD -->
+  <div id="hud-layer">
+    <div class="hud-item">
+      <div class="hud-label">Time</div>
+      <div class="hud-value" id="timer-val">60</div>
+    </div>
+    <div class="hud-item">
+      <div class="hud-label">Score</div>
+      <div class="hud-value" id="score-val">0</div>
+    </div>
+  </div>
+
+  <!-- 开始菜单 -->
+  <div id="start-screen" class="menu-overlay">
+    <h1>🍎 忍者切水果 🍉</h1>
+    <p style="font-size: 18px; opacity: 0.8; margin-bottom: 40px;">
+      移动食指指尖切开水果，小心炸弹！💣
+    </p>
+    <button class="btn" onclick="startGame()">开始游戏</button>
+  </div>
+
+  <!-- 结束菜单 -->
+  <div id="game-over-screen" class="menu-overlay hidden">
+    <h2>游戏结束</h2>
+    <div class="score-board">
+      <div>最终得分</div>
+      <div class="highlight" id="final-score">0</div>
+    </div>
+    <div id="game-over-reason" style="color: #ff6b6b; margin-bottom: 20px;">时间耗尽</div>
+    <button class="btn" onclick="startGame()">再来一局</button>
+  </div>
+</div>
+
+<script>
+  // --- 1. 系统变量 & 配置 ---
+  const videoElement = document.getElementsByClassName('input_video')[0];
+  const canvasElement = document.getElementsByClassName('output_canvas')[0];
+  const canvasCtx = canvasElement.getContext('2d');
+  
+  // UI 元素
+  const hudLayer = document.getElementById('hud-layer');
+  const startScreen = document.getElementById('start-screen');
+  const gameOverScreen = document.getElementById('game-over-screen');
+  const scoreEl = document.getElementById('score-val');
+  const timerEl = document.getElementById('timer-val');
+  const finalScoreEl = document.getElementById('final-score');
+  const reasonEl = document.getElementById('game-over-reason');
+
+  // 游戏状态
+  let gameState = 'MENU'; // MENU, PLAYING, GAMEOVER
+  let score = 0;
+  let timeLeft = 60;
+  let timerInterval = null;
+  let handPosition = { x: -1, y: -1 };
+  
+  // 物理对象数组
+  let fruits = [];
+  let particles = []; // 切开的碎片
+  let lastSpawnTime = 0;
+  
+  // 定义水果类型
+  const FRUIT_TYPES = [
+    { icon: '🍎', color: '#ff4757', size: 50 },
+    { icon: '🍊', color: '#ffa502', size: 45 },
+    { icon: '🍉', color: '#2ed573', size: 60 },
+    { icon: '🥝', color: '#7bed9f', size: 45 },
+    { icon: '🥥', color: '#dfe4ea', size: 50 },
+  ];
+  const BOMB_TYPE = { icon: '💣', color: '#2f3542', size: 60, type: 'bomb' };
+
+  // 重力常量
+  const GRAVITY = 0.25;
+
+  // --- 2. MediaPipe 设置 ---
+  const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+  hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+
+  hands.onResults(onHandResults);
+
+  const camera = new Camera(videoElement, {
+    onFrame: async () => { await hands.send({image: videoElement}); },
+    width: 1280, height: 720
+  });
+  camera.start();
+
+  // --- 3. 核心逻辑 ---
+
+  function onHandResults(results) {
+    // 适配画布
+    canvasElement.width = window.innerWidth;
+    canvasElement.height = window.innerHeight;
+    const W = canvasElement.width;
+    const H = canvasElement.height;
+
+    canvasCtx.save();
+    canvasCtx.clearRect(0, 0, W, H);
+
+    // 3.1 追踪手势
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+      const landmarks = results.multiHandLandmarks[0];
+      const indexTip = landmarks[8]; // 食指指尖
+      
+      handPosition = { x: indexTip.x * W, y: indexTip.y * H };
+
+      // 绘制刀光/轨迹 (黄色光晕)
+      canvasCtx.shadowBlur = 20;
+      canvasCtx.shadowColor = "gold";
+      canvasCtx.fillStyle = "rgba(255, 255, 255, 0.9)";
+      canvasCtx.beginPath();
+      canvasCtx.arc(handPosition.x, handPosition.y, 10, 0, 2 * Math.PI);
+      canvasCtx.fill();
+      canvasCtx.shadowBlur = 0;
+    } else {
+      handPosition = { x: -1000, y: -1000 }; // 移出屏幕
+    }
+
+    // 3.2 只有在游戏中才运行物理循环
+    if (gameState === 'PLAYING') {
+      updateAndDrawGame(W, H);
+    } else if (gameState === 'GAMEOVER') {
+        // 游戏结束也可以让碎片掉完，显得自然点
+        updateParticles(W, H);
+    }
+
+    canvasCtx.restore();
+  }
+
+  function startGame() {
+    // 重置数据
+    score = 0;
+    timeLeft = 60;
+    fruits = [];
+    particles = [];
+    gameState = 'PLAYING';
+    
+    // UI 更新
+    startScreen.classList.add('hidden');
+    gameOverScreen.classList.add('hidden');
+    hudLayer.style.display = 'block';
+    scoreEl.innerText = score;
+    timerEl.innerText = timeLeft;
+    timerEl.classList.remove('warning');
+
+    // 启动倒计时
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = setInterval(() => {
+      timeLeft--;
+      timerEl.innerText = timeLeft;
+      if (timeLeft <= 10) timerEl.classList.add('warning');
+      
+      if (timeLeft <= 0) {
+        endGame("时间耗尽!");
+      }
+    }, 1000);
+  }
+
+  function endGame(reason) {
+    gameState = 'GAMEOVER';
+    clearInterval(timerInterval);
+    
+    hudLayer.style.display = 'none';
+    gameOverScreen.classList.remove('hidden');
+    finalScoreEl.innerText = score;
+    reasonEl.innerText = reason;
+  }
+
+  function updateAndDrawGame(W, H) {
+    const now = Date.now();
+
+    // 1. 生成水果 (动态难度：分数越高，生成越快)
+    let interval = 1000 - Math.min(score * 5, 600); // 最快 400ms
+    if (now - lastSpawnTime > interval) {
+      spawnObject(W, H);
+      lastSpawnTime = now;
+    }
+
+    // 2. 更新水果
+    for (let i = fruits.length - 1; i >= 0; i--) {
+      let f = fruits[i];
+      
+      // 物理运动
+      f.x += f.vx;
+      f.y += f.vy;
+      f.vy += GRAVITY; // 重力
+      f.rotation += f.rotationSpeed;
+
+      // 绘制
+      drawFruit(f);
+
+      // 检测碰撞 (距离检测)
+      const dist = Math.hypot(f.x - handPosition.x, f.y - handPosition.y);
+      if (dist < f.size) {
+        // 切到了！
+        if (f.type === 'bomb') {
+          endGame("切到了炸弹! 💥");
+          return;
+        } else {
+          // 水果
+          score += 10;
+          scoreEl.innerText = score;
+          createSliceEffect(f); // 切开特效
+          fruits.splice(i, 1); // 移除水果
+          continue;
+        }
+      }
+
+      // 掉出屏幕移除
+      if (f.y > H + 100) {
+        fruits.splice(i, 1);
+      }
+    }
+
+    // 3. 更新碎片
+    updateParticles(W, H);
+  }
+
+  function updateParticles(W, H) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      let p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += GRAVITY + 0.1; // 碎片重力稍微大一点
+      p.rotation += p.rotationSpeed;
+      p.life--; // 生命周期
+
+      // 绘制半个水果
+      drawHalfFruit(p);
+
+      if (p.life <= 0 || p.y > H) {
+        particles.splice(i, 1);
+      }
+    }
+  }
+
+  function spawnObject(W, H) {
+    // 20% 概率是炸弹
+    const isBomb = Math.random() < 0.2;
+    const item = isBomb ? BOMB_TYPE : FRUIT_TYPES[Math.floor(Math.random() * FRUIT_TYPES.length)];
+
+    // 随机起始位置 (底部中间区域)
+    const startX = W * 0.2 + Math.random() * (W * 0.6);
+    const startY = H + 50;
+
+    // 向中心偏上的随机速度
+    const targetX = W * 0.2 + Math.random() * (W * 0.6);
+    const vx = (targetX - startX) / 100; // 简单的水平速度引导
+    const vy = -(12 + Math.random() * 5); // 强力的向上脉冲
+
+    fruits.push({
+      ...item, // 复制属性 (icon, color, size)
+      x: startX,
+      y: startY,
+      vx: vx,
+      vy: vy,
+      rotation: Math.random() * Math.PI,
+      rotationSpeed: (Math.random() - 0.5) * 0.2,
+      type: isBomb ? 'bomb' : 'fruit'
+    });
+  }
+
+  // 绘制完整水果
+  function drawFruit(f) {
+    canvasCtx.save();
+    canvasCtx.translate(f.x, f.y);
+    canvasCtx.rotate(f.rotation);
+    
+    // 绘制 Emoji
+    canvasCtx.font = `${f.size * 2}px Arial`;
+    canvasCtx.textAlign = "center";
+    canvasCtx.textBaseline = "middle";
+    canvasCtx.fillText(f.icon, 0, 8); // 微调 y 轴居中
+    
+    canvasCtx.restore();
+  }
+
+  // 生成切开的碎片
+  function createSliceEffect(f) {
+    // 生成左右两片
+    // 左片
+    particles.push({
+      icon: f.icon, size: f.size,
+      x: f.x, y: f.y,
+      vx: f.vx - 2 - Math.random(), // 向左炸开
+      vy: f.vy - 2,
+      rotation: f.rotation,
+      rotationSpeed: -0.1 - Math.random() * 0.1,
+      life: 60,
+      side: 'left'
+    });
+    // 右片
+    particles.push({
+      icon: f.icon, size: f.size,
+      x: f.x, y: f.y,
+      vx: f.vx + 2 + Math.random(), // 向右炸开
+      vy: f.vy - 2,
+      rotation: f.rotation,
+      rotationSpeed: 0.1 + Math.random() * 0.1,
+      life: 60,
+      side: 'right'
+    });
+  }
+
+  // 绘制半个水果 (使用 clip 实现)
+  function drawHalfFruit(p) {
+    canvasCtx.save();
+    canvasCtx.translate(p.x, p.y);
+    canvasCtx.rotate(p.rotation);
+    
+    // 透明度渐变
+    canvasCtx.globalAlpha = p.life / 60;
+
+    // 创建裁剪区域
+    canvasCtx.beginPath();
+    if (p.side === 'left') {
+        // 裁左边：画一个左半边的矩形
+        canvasCtx.rect(-p.size, -p.size, p.size, p.size * 2);
+    } else {
+        // 裁右边
+        canvasCtx.rect(0, -p.size, p.size, p.size * 2);
+    }
+    canvasCtx.clip();
+
+    // 绘制完整的 Emoji (由于被 clip 了，只会显示一半)
+    canvasCtx.font = `${p.size * 2}px Arial`;
+    canvasCtx.textAlign = "center";
+    canvasCtx.textBaseline = "middle";
+    canvasCtx.fillText(p.icon, 0, 8);
+
+    canvasCtx.restore();
+  }
+
+</script>
+</body>
+</html>

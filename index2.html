@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>手势切水果 + 隐藏贪吃蛇</title>
+  <!-- MediaPipe 依赖 -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    body {
+      margin: 0; padding: 0;
+      background-color: #1a1a1a;
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      user-select: none;
+    }
+
+    /* 容器 */
+    #game-container {
+      position: relative;
+      width: 100vw; height: 100vh;
+      display: flex; justify-content: center; align-items: center;
+      background: radial-gradient(circle, #2c3e50 0%, #000000 100%);
+    }
+
+    /* 摄像头小窗 */
+    .input_video {
+      position: absolute; top: 0; left: 0;
+      width: 160px; height: 120px;
+      opacity: 0.6; z-index: 1;
+      transform: scaleX(-1);
+      border-bottom-right-radius: 10px;
+      border: 2px solid rgba(255,255,255,0.2);
+    }
+
+    /* 主画布 */
+    .output_canvas {
+      position: absolute; width: 100%; height: 100%;
+      z-index: 2;
+      transform: scaleX(-1); /* 镜像 */
+    }
+
+    /* UI 层 */
+    #ui-layer {
+      position: absolute; width: 100%; height: 100%;
+      z-index: 10; pointer-events: none;
+    }
+
+    /* 切水果 HUD */
+    #fruit-hud {
+      position: absolute; top: 20px; right: 30px;
+      text-align: right; color: white; display: none;
+    }
+    .hud-value { font-size: 42px; font-weight: 800; font-family: monospace; text-shadow: 0 0 10px rgba(255,255,255,0.5); }
+    .cake-counter { font-size: 24px; color: #ff9ff3; margin-top: 10px; }
+
+    /* 贪吃蛇 HUD */
+    #snake-hud {
+      position: absolute; top: 20px; left: 30px;
+      text-align: left; color: #2ed573; display: none;
+    }
+    
+    /* 菜单遮罩 */
+    .menu-overlay {
+      position: absolute; width: 100%; height: 100%;
+      z-index: 20; background: rgba(0, 0, 0, 0.85);
+      display: flex; flex-direction: column;
+      justify-content: center; align-items: center;
+      color: white; backdrop-filter: blur(5px);
+      pointer-events: auto; /* 允许点击 */
+    }
+    .hidden { display: none !important; }
+
+    h1 { font-size: 60px; margin: 0 0 20px 0; color: #f39c12; text-shadow: 0 0 20px #e67e22; }
+    h2 { font-size: 40px; color: #e74c3c; }
+    
+    .btn {
+      padding: 15px 40px; font-size: 24px;
+      background: linear-gradient(45deg, #e67e22, #d35400);
+      color: white; border: none; border-radius: 50px;
+      cursor: pointer; transition: 0.2s;
+      box-shadow: 0 5px 15px rgba(230, 126, 34, 0.4);
+    }
+    .btn:hover { transform: scale(1.05); }
+
+    /* 贪吃蛇提示 */
+    .snake-instruction {
+      position: absolute; bottom: 10%; width: 100%;
+      text-align: center; color: rgba(255,255,255,0.5); font-size: 18px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="game-container">
+  <video class="input_video"></video>
+  <canvas class="output_canvas"></canvas>
+
+  <!-- UI 层 -->
+  <div id="ui-layer">
+    <!-- 切水果 HUD -->
+    <div id="fruit-hud">
+      <div>SCORE <span id="score-val" class="hud-value">0</span></div>
+      <div>TIME <span id="timer-val" class="hud-value">60</span></div>
+      <div class="cake-counter">🎂 蛋糕收集: <span id="cake-val">0</span>/5</div>
+    </div>
+
+    <!-- 贪吃蛇 HUD -->
+    <div id="snake-hud">
+      <h2>🐍 隐藏模式: 贪吃蛇</h2>
+      <div>长度: <span id="snake-score" class="hud-value">0</span></div>
+      <div class="snake-instruction">手掌相对于屏幕中心的位置控制方向</div>
+    </div>
+  </div>
+
+  <!-- 开始菜单 -->
+  <div id="start-screen" class="menu-overlay">
+    <h1>🍎 忍者切水果 🍉</h1>
+    <p style="margin-bottom: 40px; font-size: 20px; color: #aaa;">
+      切开水果得分，小心炸弹。<br>
+      <span style="color: #ff9ff3;">集齐 5 个蛋糕进入隐藏世界！</span>
+    </p>
+    <button class="btn" onclick="startGame('fruit')">开始游戏</button>
+  </div>
+
+  <!-- 游戏结束菜单 -->
+  <div id="game-over-screen" class="menu-overlay hidden">
+    <h2 id="go-title">游戏结束</h2>
+    <div style="font-size: 30px; margin-bottom: 20px;">得分: <span id="final-score" style="color: gold;">0</span></div>
+    <div id="go-reason" style="color: #ff6b6b; margin-bottom: 30px;"></div>
+    <button class="btn" onclick="startGame('fruit')">再来一局</button>
+  </div>
+</div>
+
+<script>
+  // ================= 配置与状态 =================
+  const videoElement = document.getElementsByClassName('input_video')[0];
+  const canvasElement = document.getElementsByClassName('output_canvas')[0];
+  const ctx = canvasElement.getContext('2d');
+
+  // 游戏模式: 'MENU', 'FRUIT_PLAY', 'FRUIT_OVER', 'SNAKE_PLAY', 'SNAKE_OVER'
+  let currentState = 'MENU'; 
+  
+  // MediaPipe 手部数据
+  let handResults = null;
+  let handPos = { x: -1, y: -1 }; // 归一化 0-1
+  
+  // --- 切水果变量 ---
+  let fruitScore = 0;
+  let fruitTime = 60;
+  let fruitTimerRef = null;
+  let cakeCount = 0;
+  let fruits = [];
+  let particles = [];
+  let lastSpawnTime = 0;
+  
+  const FRUIT_GRAVITY = 0.2; // 重力
+  const FRUIT_TYPES = ['🍎','🍊','🍉','🥝','🥥','🍇'];
+  const BOMB_TYPE = { icon: '💣', type: 'bomb' };
+  const CAKE_TYPE = { icon: '🎂', type: 'cake' };
+
+  // --- 贪吃蛇变量 ---
+  let snake = []; // 身体数组
+  let snakeDir = { x: 0, y: -1 }; // 初始向上
+  let snakeFood = { x: 0, y: 0 };
+  let snakeGridSize = 30; // 格子大小
+  let snakeMoveTimer = 0;
+  let snakeMoveInterval = 150; // 蛇移动速度 (ms)
+  let snakeScore = 0;
+
+  // ================= MediaPipe 初始化 =================
+  const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+  hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+  
+  hands.onResults((results) => {
+    handResults = results;
+    // 核心循环：MediaPipe 每一帧驱动游戏渲染
+    gameLoop(); 
+  });
+
+  const camera = new Camera(videoElement, {
+    onFrame: async () => { await hands.send({image: videoElement}); },
+    width: 1280, height: 720
+  });
+  camera.start();
+
+  // ================= 游戏流程控制 =================
+  
+  function startGame(mode) {
+    document.getElementById('start-screen').classList.add('hidden');
+    document.getElementById('game-over-screen').classList.add('hidden');
+
+    if (mode === 'fruit') {
+      initFruitGame();
+    } else if (mode === 'snake') {
+      initSnakeGame();
+    }
+  }
+
+  function initFruitGame() {
+    currentState = 'FRUIT_PLAY';
+    fruitScore = 0;
+    fruitTime = 60;
+    cakeCount = 0;
+    fruits = [];
+    particles = [];
+    
+    updateFruitUI();
+    document.getElementById('fruit-hud').style.display = 'block';
+    document.getElementById('snake-hud').style.display = 'none';
+
+    if (fruitTimerRef) clearInterval(fruitTimerRef);
+    fruitTimerRef = setInterval(() => {
+      fruitTime--;
+      updateFruitUI();
+      if (fruitTime <= 0) gameOver('时间耗尽', 'fruit');
+    }, 1000);
+  }
+
+  function initSnakeGame() {
+    currentState = 'SNAKE_PLAY';
+    document.getElementById('fruit-hud').style.display = 'none';
+    document.getElementById('snake-hud').style.display = 'block';
+    
+    // 初始化蛇
+    const startX = Math.floor(window.innerWidth / snakeGridSize / 2);
+    const startY = Math.floor(window.innerHeight / snakeGridSize / 2);
+    snake = [
+      { x: startX, y: startY },
+      { x: startX, y: startY + 1 },
+      { x: startX, y: startY + 2 }
+    ];
+    snakeDir = { x: 0, y: -1 };
+    snakeScore = 0;
+    placeSnakeFood();
+    document.getElementById('snake-score').innerText = snakeScore;
+  }
+
+  function gameOver(reason, fromMode) {
+    if (fromMode === 'fruit') clearInterval(fruitTimerRef);
+    
+    currentState = fromMode === 'fruit' ? 'FRUIT_OVER' : 'SNAKE_OVER';
+    
+    document.getElementById('fruit-hud').style.display = 'none';
+    document.getElementById('snake-hud').style.display = 'none';
+    document.getElementById('game-over-screen').classList.remove('hidden');
+    
+    document.getElementById('go-title').innerText = fromMode === 'fruit' ? "游戏结束" : "贪吃蛇撞车了!";
+    document.getElementById('final-score').innerText = fromMode === 'fruit' ? fruitScore : snakeScore;
+    document.getElementById('go-reason').innerText = reason;
+  }
+
+  function updateFruitUI() {
+    document.getElementById('score-val').innerText = fruitScore;
+    document.getElementById('timer-val').innerText = fruitTime;
+    document.getElementById('cake-val').innerText = cakeCount;
+  }
+
+  // ================= 主循环 Render Loop =================
+  function gameLoop() {
+    // 1. 准备画布
+    canvasElement.width = window.innerWidth;
+    canvasElement.height = window.innerHeight;
+    const W = canvasElement.width;
+    const H = canvasElement.height;
+    
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+
+    // 2. 处理手部位置 & 绘制骨架
+    processHand(W, H);
+
+    // 3. 根据状态分发逻辑
+    if (currentState === 'FRUIT_PLAY') {
+      updateFruitGame(W, H);
+    } else if (currentState === 'SNAKE_PLAY') {
+      updateSnakeGame(W, H);
+    } else if (currentState === 'FRUIT_OVER' || currentState === 'SNAKE_OVER') {
+        // 游戏结束也可以简单更新一下碎片动画
+        updateParticles(W, H); 
+    }
+
+    ctx.restore();
+  }
+
+  function processHand(W, H) {
+    if (handResults && handResults.multiHandLandmarks && handResults.multiHandLandmarks.length > 0) {
+      const landmarks = handResults.multiHandLandmarks[0];
+      
+      // 绘制完整手骨架
+      drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {color: 'rgba(0, 255, 0, 0.5)', lineWidth: 4});
+      drawLandmarks(ctx, landmarks, {color: 'rgba(255, 0, 0, 0.5)', lineWidth: 2});
+
+      // 获取食指指尖 (Index 8)
+      const indexTip = landmarks[8];
+      handPos = { x: indexTip.x, y: indexTip.y }; // 0-1
+
+      // 绘制“刀光” (增强体验)
+      const screenX = handPos.x * W;
+      const screenY = handPos.y * H;
+      
+      // 外发光
+      ctx.shadowBlur = 25;
+      ctx.shadowColor = "#00f2ff";
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(screenX, screenY, 12, 0, 2 * Math.PI);
+      ctx.fill();
+      
+      // 刀锋轨迹感 (简单画个圈)
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "#00f2ff";
+      ctx.stroke();
+      ctx.shadowBlur = 0; // 重置
+
+    } else {
+      handPos = { x: -1, y: -1 };
+    }
+  }
+
+  // ================= 逻辑: 切水果 =================
+  function updateFruitGame(W, H) {
+    // 生成逻辑
+    if (Date.now() - lastSpawnTime > 800) { // 生成间隔
+      spawnFruit(W, H);
+      lastSpawnTime = Date.now();
+    }
+
+    // 更新物体
+    for (let i = fruits.length - 1; i >= 0; i--) {
+      let f = fruits[i];
+      f.x += f.vx;
+      f.y += f.vy;
+      f.vy += FRUIT_GRAVITY;
+      f.rotation += f.rotSpeed;
+
+      // 绘制
+      ctx.translate(f.x, f.y);
+      ctx.rotate(f.rotation);
+      ctx.font = `${f.size}px Arial`;
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(f.icon, 0, 0);
+      ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform
+
+      // 碰撞检测 (食指尖)
+      if (handPos.x !== -1) {
+        const hx = handPos.x * W;
+        const hy = handPos.y * H;
+        const dist = Math.hypot(hx - f.x, hy - f.y);
+        
+        if (dist < f.size / 1.5) {
+          // 切中
+          if (f.type === 'bomb') {
+            gameOver('切到炸弹 💥', 'fruit');
+            return;
+          } 
+          else if (f.type === 'cake') {
+            cakeCount++;
+            createSliceEffect(f, '#ff9ff3');
+            updateFruitUI();
+            fruits.splice(i, 1);
+            // --- 彩蛋触发判断 ---
+            if (cakeCount >= 5) {
+              clearInterval(fruitTimerRef); // 停止倒计时
+              startGame('snake'); // 切换到贪吃蛇
+              return;
+            }
+          } 
+          else {
+            fruitScore += 10;
+            createSliceEffect(f, '#fff');
+            updateFruitUI();
+            fruits.splice(i, 1);
+          }
+          continue;
+        }
+      }
+
+      // 移除出界
+      if (f.y > H + 100) fruits.splice(i, 1);
+    }
+
+    updateParticles(W, H);
+  }
+
+  function spawnFruit(W, H) {
+    const r = Math.random();
+    let item;
+    if (r < 0.15) item = BOMB_TYPE; // 15% 炸弹
+    else if (r < 0.25 && cakeCount < 5) item = CAKE_TYPE; // 10% 蛋糕
+    else item = { icon: FRUIT_TYPES[Math.floor(Math.random() * FRUIT_TYPES.length)], type: 'fruit' };
+
+    // 提高抛出高度：加大初始 Y 速度
+    // 原来 vy 是 -12~-17，现在调整为 -18 ~ -25
+    const startX = W * 0.1 + Math.random() * W * 0.8;
+    const vy = -(18 + Math.random() * 7); 
+    const vx = (W/2 - startX) * 0.01 + (Math.random() - 0.5) * 2; // 向中间靠拢
+
+    fruits.push({
+      ...item,
+      x: startX, y: H + 50,
+      vx: vx, vy: vy,
+      rotation: 0, rotSpeed: (Math.random()-0.5)*0.2,
+      size: 60
+    });
+  }
+
+  function createSliceEffect(f, color) {
+    for (let i=0; i<2; i++) {
+      particles.push({
+        icon: f.icon, x: f.x, y: f.y,
+        vx: (i===0?-1:1)*3 + f.vx, vy: -5,
+        rot: f.rotation, rotSpeed: (i===0?-1:1)*0.1,
+        life: 40, half: i // 0左 1右
+      });
+    }
+  }
+
+  function updateParticles(W, H) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      let p = particles[i];
+      p.x += p.vx; p.y += p.vy; p.vy += 0.5;
+      p.rot += p.rotSpeed; p.life--;
+      
+      ctx.globalAlpha = p.life / 40;
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      
+      // 裁剪绘制半个
+      ctx.beginPath();
+      ctx.rect(p.half===0 ? -30 : 0, -30, 30, 60);
+      ctx.clip();
+      ctx.font = "60px Arial";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(p.icon, 0, 0);
+      
+      ctx.restore(); // 恢复context状态（含alpha和clip）
+
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+  }
+
+  // ================= 逻辑: 贪吃蛇 =================
+  function updateSnakeGame(W, H) {
+    const now = Date.now();
+    const cols = Math.floor(W / snakeGridSize);
+    const rows = Math.floor(H / snakeGridSize);
+
+    // 1. 绘制背景网格 (淡色)
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth = 1;
+    for(let i=0; i<=cols; i++) { ctx.beginPath(); ctx.moveTo(i*snakeGridSize,0); ctx.lineTo(i*snakeGridSize,H); ctx.stroke(); }
+    for(let j=0; j<=rows; j++) { ctx.beginPath(); ctx.moveTo(0,j*snakeGridSize); ctx.lineTo(W,j*snakeGridSize); ctx.stroke(); }
+
+    // 2. 绘制控制指示器 (中心十字)
+    const cx = W / 2, cy = H / 2;
+    ctx.strokeStyle = 'rgba(46, 213, 115, 0.3)';
+    ctx.beginPath(); ctx.moveTo(cx, cy-50); ctx.lineTo(cx, cy+50); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx-50, cy); ctx.lineTo(cx+50, cy); ctx.stroke();
+
+    // 3. 根据手位置决定方向 (虚拟摇杆)
+    if (handPos.x !== -1) {
+        // 简单的四个象限判断
+        // 必须离开中心一定距离才转向，防止抖动 (Deadzone)
+        const deadZone = 0.15; 
+        const dx = handPos.x - 0.5;
+        const dy = handPos.y - 0.5;
+
+        // 显示当前指令
+        let dirText = "";
+        if (Math.abs(dx) > Math.abs(dy)) {
+            if (dx < -deadZone && snakeDir.x !== 1) { snakeDir = {x: -1, y: 0}; dirText = "⬅️"; }
+            else if (dx > deadZone && snakeDir.x !== -1) { snakeDir = {x: 1, y: 0}; dirText = "➡️"; }
+        } else {
+            if (dy < -deadZone && snakeDir.y !== 1) { snakeDir = {x: 0, y: -1}; dirText = "⬆️"; }
+            else if (dy > deadZone && snakeDir.y !== -1) { snakeDir = {x: 0, y: 1}; dirText = "⬇️"; }
+        }
+        
+        // 绘制手部位置和方向提示
+        ctx.fillStyle = "#2ed573";
+        ctx.beginPath(); ctx.arc(handPos.x * W, handPos.y * H, 10, 0, 2*Math.PI); ctx.fill();
+        if(dirText) {
+            ctx.font = "40px Arial";
+            ctx.fillText(dirText, cx, cy);
+        }
+    }
+
+    // 4. 移动更新 (定时器)
+    if (now - snakeMoveTimer > snakeMoveInterval) {
+        snakeMoveTimer = now;
+        
+        const head = { x: snake[0].x + snakeDir.x, y: snake[0].y + snakeDir.y };
+
+        // 撞墙判定
+        if (head.x < 0 || head.x >= cols || head.y < 0 || head.y >= rows) {
+            gameOver("撞墙啦!", 'snake');
+            return;
+        }
+        // 撞自己判定
+        for (let part of snake) {
+            if (head.x === part.x && head.y === part.y) {
+                gameOver("咬到自己啦!", 'snake');
+                return;
+            }
+        }
+
+        snake.unshift(head); // 加头
+
+        // 吃食物
+        if (head.x === snakeFood.x && head.y === snakeFood.y) {
+            snakeScore++;
+            document.getElementById('snake-score').innerText = snakeScore;
+            placeSnakeFood();
+            // 稍微加速
+            snakeMoveInterval = Math.max(50, snakeMoveInterval - 2);
+        } else {
+            snake.pop(); // 去尾
+        }
+    }
+
+    // 5. 绘制蛇和食物
+    // 食物
+    ctx.font = "24px Arial";
+    ctx.fillText("🍎", snakeFood.x * snakeGridSize + snakeGridSize/2, snakeFood.y * snakeGridSize + snakeGridSize/2);
+
+    // 蛇
+    ctx.fillStyle = "#2ed573";
+    snake.forEach((part, index) => {
+        const px = part.x * snakeGridSize;
+        const py = part.y * snakeGridSize;
+        // 头颜色深一点
+        if (index === 0) ctx.fillStyle = "#26af61";
+        else ctx.fillStyle = "#2ed573";
+        
+        ctx.fillRect(px + 2, py + 2, snakeGridSize - 4, snakeGridSize - 4);
+    });
+  }
+
+  function placeSnakeFood() {
+    const cols = Math.floor(window.innerWidth / snakeGridSize);
+    const rows = Math.floor(window.innerHeight / snakeGridSize);
+    snakeFood = {
+        x: Math.floor(Math.random() * cols),
+        y: Math.floor(Math.random() * rows)
+    };
+  }
+
+</script>
+</body>
+</html>

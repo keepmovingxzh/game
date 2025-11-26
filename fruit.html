@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>手势切水果</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    body { margin: 0; padding: 0; background-color: #1a1a1a; overflow: hidden; font-family: sans-serif; user-select: none; }
+    #game-container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; background: radial-gradient(circle, #2c3e50 0%, #000000 100%); }
+    .input_video { position: absolute; top: 0; left: 0; width: 160px; height: 120px; opacity: 0.6; z-index: 1; transform: scaleX(-1); border-bottom-right-radius: 10px; border: 2px solid rgba(255,255,255,0.2); }
+    .output_canvas { position: absolute; width: 100%; height: 100%; z-index: 2; transform: scaleX(-1); }
+    #ui-layer { position: absolute; width: 100%; height: 100%; z-index: 10; pointer-events: none; }
+    
+    /* HUD */
+    #fruit-hud { position: absolute; top: 20px; right: 30px; text-align: right; color: white; display: none; }
+    .hud-value { font-size: 42px; font-weight: 800; font-family: monospace; text-shadow: 0 0 10px rgba(255,255,255,0.5); }
+    .cake-counter { font-size: 24px; color: #ff9ff3; margin-top: 10px; transition: 0.3s; }
+    .cake-counter.full { color: #fab1a0; font-weight: bold; transform: scale(1.1); }
+
+    /* 菜单遮罩 */
+    .menu-overlay { position: absolute; width: 100%; height: 100%; z-index: 20; background: rgba(0, 0, 0, 0.85); display: flex; flex-direction: column; justify-content: center; align-items: center; color: white; backdrop-filter: blur(5px); pointer-events: auto; }
+    .hidden { display: none !important; }
+    h1 { font-size: 60px; margin: 0 0 20px 0; color: #f39c12; text-shadow: 0 0 20px #e67e22; }
+    .btn { padding: 15px 40px; font-size: 24px; margin: 10px; background: linear-gradient(45deg, #e67e22, #d35400); color: white; border: none; border-radius: 50px; cursor: pointer; box-shadow: 0 5px 15px rgba(230, 126, 34, 0.4); }
+    .btn:hover { transform: scale(1.05); }
+    .btn-secondary { background: linear-gradient(45deg, #3498db, #2980b9); box-shadow: 0 5px 15px rgba(52, 152, 219, 0.4); }
+    .btn-secret { background: linear-gradient(45deg, #9b59b6, #8e44ad); box-shadow: 0 5px 15px rgba(155, 89, 182, 0.4); animation: pulse 1.5s infinite; }
+
+    @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
+  </style>
+</head>
+<body>
+
+<div id="game-container">
+  <video class="input_video"></video>
+  <canvas class="output_canvas"></canvas>
+
+  <!-- HUD -->
+  <div id="ui-layer">
+    <div id="fruit-hud">
+      <div>SCORE <span id="score-val" class="hud-value">0</span></div>
+      <div>TIME <span id="timer-val" class="hud-value">60</span></div>
+      <div class="cake-counter" id="cake-container">🎂 蛋糕: <span id="cake-val">0</span>/5</div>
+    </div>
+  </div>
+
+  <!-- 开始菜单 -->
+  <div id="start-screen" class="menu-overlay">
+    <h1>🍎 手势切水果 🍉</h1>
+    <p style="margin-bottom: 40px; font-size: 20px; color: #aaa;">切开水果得分，小心炸弹。<br><span style="color: #ff9ff3;">集齐 5 个蛋糕有惊喜！</span></p>
+    <button class="btn" onclick="startGame()">开始游戏</button>
+  </div>
+
+  <!-- 隐藏关卡确认菜单 -->
+  <div id="secret-menu" class="menu-overlay hidden">
+    <h1 style="color: #ff9ff3;">🎂 隐藏入口开启! 🎂</h1>
+    <p style="font-size: 22px; margin-bottom: 30px;">你已经集齐了5个蛋糕，是否进入隐藏世界？</p>
+    <div>
+        <button class="btn btn-secondary" onclick="resumeGame()">继续切水果</button>
+        <button class="btn btn-secret" onclick="goToSnake()">进入隐藏关卡</button>
+    </div>
+  </div>
+
+  <!-- 结束菜单 -->
+  <div id="game-over-screen" class="menu-overlay hidden">
+    <h2>游戏结束</h2>
+    <div style="font-size: 30px; margin-bottom: 20px;">最终得分: <span id="final-score" style="color: gold;">0</span></div>
+    <div id="go-reason" style="color: #ff6b6b; margin-bottom: 30px;"></div>
+    <button class="btn" onclick="startGame()">再来一局</button>
+  </div>
+</div>
+
+<script>
+  // ================== 1. 音效管理器 ==================
+  const SoundManager = {
+    ctx: null,
+    init: function() {
+      if (!this.ctx) {
+        window.AudioContext = window.AudioContext || window.webkitAudioContext;
+        this.ctx = new AudioContext();
+      }
+      if (this.ctx.state === 'suspended') this.ctx.resume();
+    },
+    playSlice: function() {
+      if (!this.ctx) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sawtooth'; // 锯齿波模拟撕裂声
+      osc.frequency.setValueAtTime(800, this.ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(100, this.ctx.currentTime + 0.1);
+      gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.1);
+      osc.connect(gain); gain.connect(this.ctx.destination);
+      osc.start(); osc.stop(this.ctx.currentTime + 0.1);
+    },
+    playBomb: function() {
+      if (!this.ctx) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(100, this.ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(10, this.ctx.currentTime + 0.5);
+      gain.gain.setValueAtTime(0.5, this.ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.5);
+      osc.connect(gain); gain.connect(this.ctx.destination);
+      osc.start(); osc.stop(this.ctx.currentTime + 0.5);
+    }
+  };
+
+  // ================== 游戏主逻辑 ==================
+  const videoElement = document.getElementsByClassName('input_video')[0];
+  const canvasElement = document.getElementsByClassName('output_canvas')[0];
+  const ctx = canvasElement.getContext('2d');
+  
+  let currentState = 'MENU'; 
+  let handResults = null;
+  let handPos = { x: -1, y: -1 };
+  
+  let score = 0;
+  let timeLeft = 60;
+  let timerRef = null;
+  let cakeCount = 0;
+  let fruits = [];
+  let particles = [];
+  let lastSpawnTime = 0;
+  let secretUnlocked = false;
+
+  const FRUIT_GRAVITY = 0.2;
+  const FRUIT_TYPES = ['🍎','🍊','🍉','🥝','🥥','🍇'];
+  const BOMB_TYPE = { icon: '💣', type: 'bomb' };
+  const CAKE_TYPE = { icon: '🎂', type: 'cake' };
+
+  const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+  hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+  hands.onResults((results) => {
+    handResults = results;
+    gameLoop(); 
+  });
+
+  const camera = new Camera(videoElement, {
+    onFrame: async () => { await hands.send({image: videoElement}); },
+    width: 1280, height: 720
+  });
+  camera.start();
+
+  function startGame() {
+    // 用户交互触发 AudioContext 初始化 (浏览器策略要求)
+    SoundManager.init();
+
+    currentState = 'PLAYING';
+    score = 0; timeLeft = 60; cakeCount = 0; secretUnlocked = false;
+    fruits = []; particles = [];
+    document.getElementById('start-screen').classList.add('hidden');
+    document.getElementById('game-over-screen').classList.add('hidden');
+    document.getElementById('secret-menu').classList.add('hidden');
+    document.getElementById('fruit-hud').style.display = 'block';
+    document.getElementById('cake-container').classList.remove('full');
+    updateUI();
+    
+    if (timerRef) clearInterval(timerRef);
+    timerRef = setInterval(() => {
+      if (currentState === 'PLAYING') {
+        timeLeft--;
+        updateUI();
+        if (timeLeft <= 0) gameOver('时间耗尽');
+      }
+    }, 1000);
+  }
+
+  function pauseGame() {
+    currentState = 'PAUSED';
+    document.getElementById('secret-menu').classList.remove('hidden');
+  }
+
+  function resumeGame() {
+    currentState = 'PLAYING';
+    document.getElementById('secret-menu').classList.add('hidden');
+    timeLeft += 10;
+    secretUnlocked = true;
+    updateUI();
+  }
+
+  function goToSnake() {
+    window.location.href = 'snake.html';
+  }
+
+  function gameOver(reason) {
+    currentState = 'GAMEOVER';
+    clearInterval(timerRef);
+    document.getElementById('fruit-hud').style.display = 'none';
+    document.getElementById('game-over-screen').classList.remove('hidden');
+    document.getElementById('final-score').innerText = score;
+    document.getElementById('go-reason').innerText = reason;
+  }
+
+  function updateUI() {
+    document.getElementById('score-val').innerText = score;
+    document.getElementById('timer-val').innerText = timeLeft;
+    document.getElementById('cake-val').innerText = cakeCount;
+    if (cakeCount >= 5) document.getElementById('cake-container').classList.add('full');
+  }
+
+  function gameLoop() {
+    canvasElement.width = window.innerWidth;
+    canvasElement.height = window.innerHeight;
+    const W = canvasElement.width; const H = canvasElement.height;
+    
+    ctx.clearRect(0, 0, W, H);
+    
+    if (handResults && handResults.multiHandLandmarks && handResults.multiHandLandmarks.length > 0) {
+        const landmarks = handResults.multiHandLandmarks[0];
+        drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {color: 'rgba(0, 255, 0, 0.3)', lineWidth: 2});
+        const indexTip = landmarks[8];
+        handPos = { x: indexTip.x, y: indexTip.y };
+        
+        const sx = handPos.x * W; const sy = handPos.y * H;
+        ctx.shadowBlur = 20; ctx.shadowColor = "#00f2ff"; ctx.fillStyle = "white";
+        ctx.beginPath(); ctx.arc(sx, sy, 10, 0, 2 * Math.PI); ctx.fill(); ctx.shadowBlur = 0;
+    } else {
+        handPos = { x: -1, y: -1 };
+    }
+
+    if (currentState === 'PLAYING') {
+      updateLogic(W, H);
+    } else if (currentState === 'PAUSED') {
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(0,0,W,H);
+      fruits.forEach(f => drawFruit(f)); 
+    } else if (currentState === 'GAMEOVER') {
+        updateParticles(W, H);
+    }
+  }
+
+  function updateLogic(W, H) {
+    if (Date.now() - lastSpawnTime > 800) {
+      spawnFruit(W, H);
+      lastSpawnTime = Date.now();
+    }
+
+    for (let i = fruits.length - 1; i >= 0; i--) {
+      let f = fruits[i];
+      f.x += f.vx; f.y += f.vy; f.vy += FRUIT_GRAVITY; f.rotation += f.rotSpeed;
+      drawFruit(f);
+
+      if (handPos.x !== -1) {
+        const dist = Math.hypot((handPos.x * W) - f.x, (handPos.y * H) - f.y);
+        if (dist < f.size / 1.5) {
+          if (f.type === 'bomb') {
+            SoundManager.playBomb(); // 播放炸弹音效
+            gameOver('切到炸弹 💥');
+            return;
+          } 
+          else {
+            // 切到水果或蛋糕
+            SoundManager.playSlice(); // 播放切水果音效
+            
+            if (f.type === 'cake') {
+              cakeCount++;
+              score += 50;
+              createSliceEffect(f);
+              updateUI();
+              fruits.splice(i, 1);
+              if (cakeCount >= 5 && !secretUnlocked) {
+                  pauseGame();
+                  return;
+              }
+            } else {
+              score += 10;
+              createSliceEffect(f);
+              updateUI();
+              fruits.splice(i, 1);
+            }
+          }
+          continue;
+        }
+      }
+      if (f.y > H + 100) fruits.splice(i, 1);
+    }
+    updateParticles(W, H);
+  }
+
+  function spawnFruit(W, H) {
+    const r = Math.random();
+    let item;
+    if (r < 0.15) item = BOMB_TYPE;
+    else if (r < 0.25 && cakeCount < 5) item = CAKE_TYPE;
+    else item = { icon: FRUIT_TYPES[Math.floor(Math.random() * FRUIT_TYPES.length)], type: 'fruit' };
+
+    const startX = W * 0.1 + Math.random() * W * 0.8;
+    fruits.push({
+      ...item, x: startX, y: H + 50,
+      vx: (W/2 - startX) * 0.01 + (Math.random() - 0.5), vy: -(18 + Math.random() * 7),
+      rotation: 0, rotSpeed: (Math.random()-0.5)*0.2, size: 60
+    });
+  }
+
+  function drawFruit(f) {
+    ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.rotation);
+    ctx.font = `${f.size}px Arial`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(f.icon, 0, 0); ctx.restore();
+  }
+
+  function createSliceEffect(f) {
+    for (let i=0; i<2; i++) {
+        particles.push({ icon: f.icon, x: f.x, y: f.y, vx: (i===0?-1:1)*4 + f.vx, vy: -5, rot: f.rotation, rotSpeed: (i===0?-1:1)*0.1, life: 40, half: i });
+    }
+  }
+
+  function updateParticles(W, H) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      let p = particles[i]; p.x += p.vx; p.y += p.vy; p.vy += 0.5; p.rot += p.rotSpeed; p.life--;
+      ctx.save(); ctx.globalAlpha = p.life / 40; ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+      ctx.beginPath(); ctx.rect(p.half===0 ? -30 : 0, -30, 30, 60); ctx.clip();
+      ctx.font = "60px Arial"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(p.icon, 0, 0); ctx.restore();
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+  }
+</script>
+</body>
+</html>
