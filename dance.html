@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>手势炫舞</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    body { margin: 0; padding: 0; background-color: #000; overflow: hidden; font-family: 'Arial', sans-serif; }
+    #game-container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
+    
+    .input_video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+    .output_canvas { position: absolute; width: 100%; height: 100%; transform: scaleX(-1); }
+    
+    #ui-layer { position: absolute; width: 100%; height: 100%; pointer-events: none; z-index: 10; display: flex; flex-direction: column; justify-content: space-between; }
+    
+    /* 顶部状态 */
+    .top-bar { padding: 20px; display: flex; justify-content: space-between; font-size: 30px; color: white; text-shadow: 0 0 10px #e91e63; font-weight: bold; }
+    
+    /* 底部判定线 */
+    .judge-line {
+      width: 100%; height: 100px; 
+      border-top: 4px solid rgba(255, 255, 255, 0.5);
+      background: linear-gradient(to bottom, rgba(255,255,255,0.1), transparent);
+      position: absolute; bottom: 50px;
+      display: flex; justify-content: space-around; align-items: center;
+    }
+    
+    .target-icon { font-size: 60px; opacity: 0.3; }
+
+    /* 连击/评价显示 */
+    #combo-display {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      text-align: center; color: #fff;
+    }
+    .combo-count { font-size: 80px; font-weight: bold; color: #f1c40f; text-shadow: 0 0 20px orange; }
+    .judge-text { font-size: 40px; color: #2ecc71; font-weight: bold; animation: pop 0.2s; }
+
+    /* 结算面板 */
+    .menu { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.85); padding: 40px; border-radius: 20px; text-align: center; backdrop-filter: blur(10px); pointer-events: auto; z-index: 30; border: 2px solid #e91e63; }
+    .hidden { display: none !important; }
+    .btn { margin-top: 20px; padding: 15px 40px; font-size: 24px; background: #e91e63; color: white; border: none; border-radius: 50px; cursor: pointer; }
+    .btn:hover { transform: scale(1.05); }
+    .btn-secondary { background: transparent; border: 2px solid #fff; margin-left: 10px; }
+    .btn-secondary:hover { background: rgba(255,255,255,0.1); }
+
+    /* 引导文字 */
+    #guide-text { position: absolute; top: 20%; width: 100%; text-align: center; color: rgba(255,255,255,0.8); font-size: 24px; text-shadow: 0 0 5px black; }
+
+    @keyframes pop { 0% { transform: scale(0.5); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+  </style>
+</head>
+<body>
+
+<div id="game-container">
+  <video class="input_video" playsinline></video>
+  <canvas class="output_canvas"></canvas>
+  
+  <div id="ui-layer">
+    <div class="top-bar">
+      <div>SCORE: <span id="score">0</span></div>
+      <div>TIME: <span id="time">60</span></div>
+    </div>
+
+    <div id="guide-text">请在屏幕中做出 "V" (剪刀手) 并指向落下的方向</div>
+
+    <div id="combo-display">
+      <div id="judge-text" class="judge-text"></div>
+      <div id="combo-text" class="combo-count hidden">0 COMBO</div>
+    </div>
+
+    <!-- 判定区视觉提示 -->
+    <div class="judge-line">
+      <div class="target-icon">⬅️</div>
+      <div class="target-icon">⬆️</div>
+      <div class="target-icon">⬇️</div>
+      <div class="target-icon">➡️</div>
+    </div>
+  </div>
+
+  <div id="center-msg">
+    <h1 id="countdown" style="font-size:100px; color:white; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); text-shadow:0 0 20px pink;" class="hidden">3</h1>
+  </div>
+
+  <div id="game-over-panel" class="menu hidden">
+    <h2 style="color: #e91e63; font-size: 40px; margin:0 0 20px 0;">舞力全开!</h2>
+    <p style="font-size: 30px; color: white;">得分: <span id="final-score" style="color: #f1c40f;">0</span></p>
+    <div style="margin-top: 30px;">
+      <button class="btn" onclick="resetGame()">再玩一次</button>
+      <button class="btn btn-secondary" onclick="window.location.href='index.html'">返回主菜单</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ================== 音效 ==================
+  const SoundManager = {
+    ctx: null,
+    init: function() {
+      window.AudioContext = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new AudioContext();
+    },
+    playHit: function() {
+      if(!this.ctx) this.init();
+      if(this.ctx.state === 'suspended') this.ctx.resume();
+      const osc = this.ctx.createOscillator(); const gain = this.ctx.createGain();
+      osc.type = 'sine'; osc.frequency.setValueAtTime(440, this.ctx.currentTime); // A4
+      osc.frequency.exponentialRampToValueAtTime(880, this.ctx.currentTime + 0.1);
+      gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.1);
+      osc.connect(gain); gain.connect(this.ctx.destination);
+      osc.start(); osc.stop(this.ctx.currentTime + 0.1);
+    },
+    playMiss: function() {
+      if(!this.ctx) this.init();
+      if(this.ctx.state === 'suspended') this.ctx.resume();
+      const osc = this.ctx.createOscillator(); const gain = this.ctx.createGain();
+      osc.type = 'sawtooth'; osc.frequency.setValueAtTime(150, this.ctx.currentTime);
+      gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.2);
+      osc.connect(gain); gain.connect(this.ctx.destination);
+      osc.start(); osc.stop(this.ctx.currentTime + 0.2);
+    }
+  };
+
+  // ================== 游戏逻辑 ==================
+  const videoElement = document.getElementsByClassName('input_video')[0];
+  const canvasElement = document.getElementsByClassName('output_canvas')[0];
+  const ctx = canvasElement.getContext('2d');
+  
+  const scoreEl = document.getElementById('score');
+  const timeEl = document.getElementById('time');
+  const comboText = document.getElementById('combo-text');
+  const judgeText = document.getElementById('judge-text');
+  const countdownEl = document.getElementById('countdown');
+  const gameOverPanel = document.getElementById('game-over-panel');
+
+  let state = 'LOADING'; // LOADING, COUNTDOWN, PLAYING, GAMEOVER
+  let score = 0;
+  let timeLeft = 60;
+  let combo = 0;
+  
+  // 笔记系统
+  let notes = [];
+  let noteSpeed = 5;
+  let spawnTimer = 0;
+  const DIRECTIONS = ['LEFT', 'UP', 'DOWN', 'RIGHT'];
+  const DIR_ICONS = {'LEFT':'⬅️', 'UP':'⬆️', 'DOWN':'⬇️', 'RIGHT':'➡️'};
+  
+  // 手势识别
+  let currentGesture = null; // 'LEFT', 'UP', ...
+
+  // MediaPipe
+  const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+  hands.setOptions({ maxNumHands: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+  
+  let isModelLoaded = false;
+
+  hands.onResults((results) => {
+    canvasElement.width = window.innerWidth; canvasElement.height = window.innerHeight;
+    const W = canvasElement.width; const H = canvasElement.height;
+    ctx.clearRect(0, 0, W, H);
+
+    if(!isModelLoaded) {
+        isModelLoaded = true;
+        state = 'COUNTDOWN';
+        startCountdown();
+    }
+
+    let detected = false;
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+      detected = true;
+      const landmarks = results.multiHandLandmarks[0];
+      
+      // 1. 绘制骨架
+      drawSkeleton(landmarks, W, H);
+      
+      // 2. 识别 V 手势方向
+      currentGesture = detectVDirection(landmarks, W, H);
+      
+      // 3. 绘制手势提示
+      if(currentGesture) {
+          const wrist = mapCoordinates(landmarks[0], videoElement, W, H);
+          ctx.font = "bold 40px Arial";
+          ctx.fillStyle = "#f1c40f";
+          ctx.fillText(DIR_ICONS[currentGesture], wrist.x, wrist.y - 50);
+      }
+    } else {
+      currentGesture = null;
+    }
+
+    if (state === 'PLAYING') {
+      updateGame(W, H);
+    } else if (state === 'GAMEOVER') {
+      // 保持背景渲染
+    }
+  });
+
+  const camera = new Camera(videoElement, {
+    onFrame: async () => { await hands.send({image: videoElement}); },
+    width: 1280, height: 720
+  });
+  camera.start();
+
+  // ================= 逻辑函数 =================
+
+  function startCountdown() {
+    let count = 3;
+    countdownEl.classList.remove('hidden');
+    countdownEl.innerText = count;
+    let timer = setInterval(() => {
+        count--;
+        if(count > 0) countdownEl.innerText = count;
+        else {
+            clearInterval(timer);
+            countdownEl.classList.add('hidden');
+            startGame();
+        }
+    }, 1000);
+  }
+
+  function startGame() {
+    state = 'PLAYING';
+    score = 0; timeLeft = 60; combo = 0; notes = [];
+    scoreEl.innerText = score; // 重置分数显示
+    SoundManager.init();
+    
+    let gameTimer = setInterval(() => {
+        if(state !== 'PLAYING') { clearInterval(gameTimer); return; }
+        timeLeft--;
+        timeEl.innerText = timeLeft;
+        if(timeLeft <= 0) endGame();
+    }, 1000);
+  }
+
+  function resetGame() {
+      gameOverPanel.classList.add('hidden');
+      state = 'COUNTDOWN';
+      startCountdown();
+  }
+
+  function updateGame(W, H) {
+    const now = Date.now();
+    const judgeY = H - 100; // 判定线位置
+    
+    // 1. 生成音符
+    if (now - spawnTimer > 1000) { // 每秒一个
+        const dir = DIRECTIONS[Math.floor(Math.random() * 4)];
+        // 分散在四个轨道
+        // LEFT: 20%, UP: 40%, DOWN: 60%, RIGHT: 80%
+        let xPercent = 0.5;
+        if(dir === 'LEFT') xPercent = 0.2;
+        if(dir === 'UP') xPercent = 0.4;
+        if(dir === 'DOWN') xPercent = 0.6;
+        if(dir === 'RIGHT') xPercent = 0.8;
+        
+        notes.push({
+            dir: dir,
+            x: W * xPercent,
+            y: -50,
+            active: true
+        });
+        spawnTimer = now;
+    }
+
+    // 2. 更新音符 & 判定
+    for (let i = 0; i < notes.length; i++) {
+        let n = notes[i];
+        if (!n.active) continue;
+        
+        n.y += noteSpeed; // 下落
+        
+        // 绘制
+        ctx.font = "60px Arial";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillStyle = "white";
+        ctx.fillText(DIR_ICONS[n.dir], n.x, n.y);
+        
+        // 自动 Miss 判定
+        if (n.y > H) {
+            n.active = false;
+            triggerJudge("MISS", "gray");
+            combo = 0; updateComboUI();
+            SoundManager.playMiss();
+        }
+        
+        // 玩家命中判定
+        // 只有当音符在判定线附近 (+/- 60px) 且 玩家做了正确手势
+        if (n.active && Math.abs(n.y - judgeY) < 60) {
+            if (currentGesture === n.dir) {
+                n.active = false; // 消除
+                score += 100 + (combo * 10);
+                scoreEl.innerText = score;
+                combo++;
+                updateComboUI();
+                triggerJudge("PERFECT", "#f1c40f");
+                SoundManager.playHit();
+                
+                // 特效
+                ctx.beginPath();
+                ctx.arc(n.x, n.y, 50, 0, 2*Math.PI);
+                ctx.strokeStyle = "gold"; ctx.lineWidth = 5; ctx.stroke();
+            }
+        }
+    }
+  }
+
+  // ================= 核心：手势方向识别 =================
+  function detectVDirection(landmarks, W, H) {
+      const wrist = landmarks[0];
+      const indexTip = landmarks[8];
+      const middleTip = landmarks[12];
+      const ringTip = landmarks[16];
+      const pinkyTip = landmarks[20];
+      
+      // 1. 判断是否是 V 手势 (食指中指伸直，无名指小指弯曲)
+      // 简单判断：食指中指指尖距离手腕 远大于 无名指小指距离手腕
+      const dIndex = dist(wrist, indexTip);
+      const dMiddle = dist(wrist, middleTip);
+      const dRing = dist(wrist, ringTip);
+      const dPinky = dist(wrist, pinkyTip);
+      
+      // 阈值：伸直的手指长度应该是弯曲的两倍以上 (简单启发式)
+      if (dIndex > dRing * 1.5 && dMiddle > dRing * 1.5) {
+          // 2. 计算 V 的方向
+          // 取食指和中指的中点
+          const midX = (indexTip.x + middleTip.x) / 2;
+          const midY = (indexTip.y + middleTip.y) / 2;
+          
+          // 计算手腕到中点的向量 (MediaPipe 坐标系: x右正, y下正)
+          const dx = midX - wrist.x;
+          const dy = midY - wrist.y;
+          
+          // 计算角度 (弧度)
+          const angle = Math.atan2(dy, dx); 
+          
+          // 角度划分 (45度 = PI/4)
+          const deg = angle * 180 / Math.PI;
+          
+          if (deg > -45 && deg < 45) return 'LEFT'; // 摄像头x正方向(屏幕左)
+          if (deg >= 45 && deg < 135) return 'DOWN';
+          if (deg >= 135 || deg <= -135) return 'RIGHT'; // 摄像头x负方向(屏幕右)
+          if (deg > -135 && deg < -45) return 'UP';
+      }
+      return null;
+  }
+
+  function dist(p1, p2) {
+      return Math.hypot(p1.x - p2.x, p1.y - p2.y);
+  }
+
+  // ================= UI & 辅助 =================
+
+  function triggerJudge(text, color) {
+      judgeText.innerText = text;
+      judgeText.style.color = color;
+      // 重置动画
+      judgeText.style.animation = 'none';
+      judgeText.offsetHeight; /* trigger reflow */
+      judgeText.style.animation = 'pop 0.2s';
+      
+      setTimeout(() => { judgeText.innerText = ""; }, 500);
+  }
+
+  function updateComboUI() {
+      if (combo > 1) {
+          comboText.innerText = combo + " COMBO";
+          comboText.classList.remove('hidden');
+      } else {
+          comboText.classList.add('hidden');
+      }
+  }
+
+  function endGame() {
+      state = 'GAMEOVER';
+      document.getElementById('final-score').innerText = score;
+      gameOverPanel.classList.remove('hidden');
+  }
+
+  // 坐标映射 (用于绘制骨架对齐)
+  function mapCoordinates(point, video, canvasW, canvasH) {
+    const videoW = video.videoWidth || 1280; const videoH = video.videoHeight || 720;
+    const videoAspect = videoW / videoH; const screenAspect = canvasW / canvasH;
+    let scale, offsetX, offsetY;
+    if (screenAspect > videoAspect) {
+        scale = canvasW / videoW; const visibleVideoH = canvasH / scale;
+        offsetY = (videoH - visibleVideoH) / 2; offsetX = 0;
+    } else {
+        scale = canvasH / videoH; const visibleVideoW = canvasW / scale;
+        offsetX = (videoW - visibleVideoW) / 2; offsetY = 0;
+    }
+    const pixelX = point.x * videoW; const pixelY = point.y * videoH;
+    const finalX = (pixelX - offsetX) * scale; const finalY = (pixelY - offsetY) * scale;
+    return { x: finalX, y: finalY };
+  }
+
+  function drawSkeleton(landmarks, W, H) {
+    ctx.save(); ctx.strokeStyle = "rgba(255, 192, 203, 0.6)"; ctx.lineWidth = 3;
+    for (const connection of HAND_CONNECTIONS) {
+        const p1 = landmarks[connection[0]]; const p2 = landmarks[connection[1]];
+        const c1 = mapCoordinates(p1, videoElement, W, H); const c2 = mapCoordinates(p2, videoElement, W, H);
+        ctx.beginPath(); ctx.moveTo(c1.x, c1.y); ctx.lineTo(c2.x, c2.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+</script>
+</body>
+</html>
