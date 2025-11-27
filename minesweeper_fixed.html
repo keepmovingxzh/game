@@ -3,17 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <title>手势扫雷</title>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <!-- 替换为 unpkg 源 -->
+  <script src="https://unpkg.com/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 
   <style>
     body { margin: 0; padding: 0; background-color: #2c3e50; overflow: hidden; font-family: 'Segoe UI', sans-serif; user-select: none; }
     #game-container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
     
     .input_video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 0.2; }
-    /* 骨架绘制层 */
     .output_canvas { position: absolute; width: 100%; height: 100%; transform: scaleX(-1); pointer-events: none; z-index: 5; }
     
     #ui-layer { position: absolute; width: 100%; height: 100%; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
@@ -103,7 +103,7 @@
 
 <div id="game-container">
   <video class="input_video" playsinline></video>
-  <canvas class="output_canvas"></canvas> <!-- 这一层现在用来画骨架 -->
+  <canvas class="output_canvas"></canvas>
   
   <div id="top-bar" class="hidden">
     <div>💣 <span id="bomb-count">10</span></div>
@@ -124,13 +124,13 @@
     <button class="btn btn-easy interactive-btn" data-action="initGame(9, 9, 10)">简单 (9x9)</button>
     <button class="btn btn-medium interactive-btn" data-action="initGame(16, 16, 40)">中等 (16x16)</button>
     <button class="btn btn-hard interactive-btn" data-action="initGame(20, 16, 60)">困难 (20x16)</button>
-    <button class="btn btn-back interactive-btn" data-action="window.location.href='fruit.html'">返回主菜单</button>
+    <button class="btn btn-back interactive-btn" data-action="window.location.href='fruit_fixed.html'">返回主菜单</button>
   </div>
 
   <div id="result-menu" class="menu hidden">
     <h1 id="result-title" style="font-size: 48px;">游戏结束</h1>
     <button class="btn btn-medium interactive-btn" data-action="location.reload()">再来一把</button>
-    <button class="btn btn-back interactive-btn" data-action="window.location.href='fruit.html'">返回主菜单</button>
+    <button class="btn btn-back interactive-btn" data-action="window.location.href='fruit_fixed.html'">返回主菜单</button>
   </div>
 
   <div id="gesture-hint">请举起一只手，伸出食指控制光标</div>
@@ -144,7 +144,6 @@
 </div>
 
 <script>
-  // ================== 游戏配置 ==================
   const HOVER_THRESHOLD = 1000; 
   let gameState = 'MENU'; 
   
@@ -153,7 +152,7 @@
   let remainingMines = 10;
   let startTime = 0;
   let timerInterval = null;
-  let isFirstClick = true; // 标记是否是第一次点击
+  let isFirstClick = true; 
 
   let cursorX = window.innerWidth/2, cursorY = window.innerHeight/2;
   let hoverTarget = null; 
@@ -193,13 +192,12 @@
     boardRows = rows; boardCols = cols; totalMines = mines;
     remainingMines = mines;
     grid = [];
-    isFirstClick = true; // 重置首发状态
+    isFirstClick = true; 
     
     document.getElementById('difficulty-menu').classList.add('hidden');
     document.getElementById('top-bar').classList.remove('hidden');
     boardEl.classList.remove('hidden');
     
-    // 初始化空盘（此时不布雷）
     boardEl.innerHTML = '';
     boardEl.style.gridTemplateColumns = `repeat(${boardCols}, 40px)`;
     
@@ -225,15 +223,11 @@
       document.getElementById('timer').innerText = seconds;
     }, 1000);
     
-    // 初始矩阵打印（全0）
     printCheatSheet();
   }
 
-  // 生成地雷（保证 startR, startC 及其周围无雷）
   function placeMines(startR, startC) {
       let minesPlaced = 0;
-      
-      // 简单的排除逻辑：如果坐标在 3x3 范围内，则跳过
       const isSafe = (r, c) => {
           return Math.abs(r - startR) <= 1 && Math.abs(c - startC) <= 1;
       };
@@ -241,21 +235,17 @@
       while(minesPlaced < totalMines) {
         const r = Math.floor(Math.random() * boardRows);
         const c = Math.floor(Math.random() * boardCols);
-        
         if(!grid[r][c].isMine && !isSafe(r, c)) {
           grid[r][c].isMine = true;
           minesPlaced++;
         }
       }
       
-      // 计算数字
       for(let r=0; r<boardRows; r++) {
         for(let c=0; c<boardCols; c++) {
           if(!grid[r][c].isMine) grid[r][c].count = countNeighbors(r, c);
         }
       }
-      
-      // 布雷完成后打印作弊码
       printCheatSheet();
   }
 
@@ -288,8 +278,6 @@
     
     if(currentMode === 'DIG') {
         if(cell.isFlagged || cell.isOpen) return;
-        
-        // 首次点击触发布雷
         if(isFirstClick) {
             placeMines(r, c);
             isFirstClick = false;
@@ -357,17 +345,15 @@
     progressCircle.style.stroke = currentMode === 'DIG' ? "#2ecc71" : "#e74c3c";
   }
 
-  // ================== MediaPipe & Canvas ==================
-  
+  // ================== MediaPipe (UNPKG Fix) ==================
   const videoElement = document.getElementsByClassName('input_video')[0];
   const canvasElement = document.getElementsByClassName('output_canvas')[0];
   const canvasCtx = canvasElement.getContext('2d');
   
-  const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+  const hands = new Hands({locateFile: (file) => `https://unpkg.com/@mediapipe/hands/${file}`});
   hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
 
   hands.onResults((results) => {
-    // 渲染骨架
     canvasElement.width = window.innerWidth;
     canvasElement.height = window.innerHeight;
     const W = canvasElement.width;
@@ -377,14 +363,9 @@
     if(results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
       const landmarks = results.multiHandLandmarks[0];
       
-      // 绘制半透明骨架
-      drawSkeleton(landmarks, W, H);
-
       const wrist = landmarks[0];
       const indexTip = landmarks[8];
       const indexMcp = landmarks[5]; 
-      
-      // 模式判断
       const dTip = Math.hypot(indexTip.x - wrist.x, indexTip.y - wrist.y);
       const dMcp = Math.hypot(indexMcp.x - wrist.x, indexMcp.y - wrist.y);
       const isFist = dTip < dMcp * 1.1; 
@@ -394,8 +375,10 @@
         currentMode = newMode;
         updateHUD();
       }
+      
+      // 绘制骨架 (在 Canvas 上)
+      drawSkeleton(landmarks, W, H);
 
-      // 光标更新
       const pointer = isFist ? landmarks[5] : landmarks[8];
       
       const screenX = (1 - pointer.x) * window.innerWidth; 
@@ -469,29 +452,26 @@
       else if (target.type === 'cell') handleCellAction(target.r, target.c);
   }
 
-  // 坐标映射
   function mapCoordinates(point, video, canvasW, canvasH) {
     const videoW = video.videoWidth || 1280; const videoH = video.videoHeight || 720;
     const videoAspect = videoW / videoH; const screenAspect = canvasW / canvasH;
     let scale, offsetX, offsetY;
     if (screenAspect > videoAspect) {
-        scale = canvasW / videoW; const visibleVideoH = canvasH / scale;
-        offsetY = (videoH - visibleVideoH) / 2; offsetX = 0;
+        scale = canvasW / videoW; const visibleVideoH = canvasH / scale; offsetY = (videoH - visibleVideoH) / 2; offsetX = 0;
     } else {
-        scale = canvasH / videoH; const visibleVideoW = canvasW / scale;
-        offsetX = (videoW - visibleVideoW) / 2; offsetY = 0;
+        scale = canvasH / videoH; const visibleVideoW = canvasW / scale; offsetX = (videoW - visibleVideoW) / 2; offsetY = 0;
     }
     const pixelX = point.x * videoW; const pixelY = point.y * videoH;
     const finalX = (pixelX - offsetX) * scale; const finalY = (pixelY - offsetY) * scale;
     return { x: finalX, y: finalY };
   }
 
-  // 绘制骨架函数
   function drawSkeleton(landmarks, W, H) {
     canvasCtx.save(); 
-    // 挖掘模式显示绿色，插旗模式显示红色
-    canvasCtx.strokeStyle = currentMode === 'DIG' ? "rgba(46, 204, 113, 0.4)" : "rgba(231, 76, 60, 0.4)"; 
+    // 颜色随模式变化
+    canvasCtx.strokeStyle = currentMode === 'DIG' ? "rgba(46, 204, 113, 0.6)" : "rgba(231, 76, 60, 0.6)"; 
     canvasCtx.lineWidth = 4;
+    canvasCtx.lineCap = "round";
     
     for (const connection of HAND_CONNECTIONS) {
         const p1 = landmarks[connection[0]]; const p2 = landmarks[connection[1]];
@@ -499,8 +479,7 @@
         canvasCtx.beginPath(); canvasCtx.moveTo(c1.x, c1.y); canvasCtx.lineTo(c2.x, c2.y); canvasCtx.stroke();
     }
     
-    // 绘制关键点
-    canvasCtx.fillStyle = "rgba(255, 255, 255, 0.5)";
+    canvasCtx.fillStyle = "rgba(255, 255, 255, 0.8)";
     for (let lm of landmarks) {
         const c = mapCoordinates(lm, videoElement, W, H);
         canvasCtx.beginPath(); canvasCtx.arc(c.x, c.y, 4, 0, 2*Math.PI); canvasCtx.fill();
